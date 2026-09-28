@@ -3387,11 +3387,16 @@ func TestSkipHelloVerify(t *testing.T) {
 type connWithCallback struct {
 	*packetTestConn
 	onWrite func([]byte)
+	// drop reports whether a write is lost on the wire.
+	drop func([]byte) bool
 }
 
 func (c *connWithCallback) WriteTo(b []byte, addr net.Addr) (int, error) {
 	if c.onWrite != nil {
 		c.onWrite(b)
+	}
+	if c.drop != nil && c.drop(b) {
+		return len(b), nil
 	}
 
 	return c.packetTestConn.WriteTo(b, addr)
@@ -4220,6 +4225,56 @@ func TestDTLS13RetransmittedClientFinalFlight(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, len(payload), n)
 	assert.Equal(t, payload, buf)
+}
+
+// TestDTLS13ClientEstablishedBeforeFinalACK covers RFC 9147 Section 5.8.1: a client may send
+// application data as soon as it has sent its Finished, while the server's ACK is still
+// outstanding. Waiting for the ACK costs WebRTC a round trip.
+func TestDTLS13ClientEstablishedBeforeFinalACK(t *testing.T) {
+	defer test.CheckRoutines(t)()
+	defer test.TimeOut(10 * time.Second).Stop()
+
+	ca, cb := packetPipe()
+	var holdACKs atomic.Bool
+	holdACKs.Store(true)
+	serverTransport := &connWithCallback{
+		packetTestConn: cb,
+		drop: func(raw []byte) bool {
+			return holdACKs.Load() && len(raw) > 0 && protocol.IsDTLS13Ciphertext(protocol.ContentType(raw[0])) &&
+				raw[0]&recordwire.EpochMask == byte(dtlsflight13.EpochApplication)
+		},
+	}
+
+	clientCert, err := selfsign.GenerateSelfSigned()
+	require.NoError(t, err)
+	client, err := Client(ca, ca.RemoteAddr(), WithCertificates(clientCert), WithInsecureSkipVerify(true), WithMinVersion(protocol.Version1_3), WithMaxVersion(protocol.Version1_3))
+	require.NoError(t, err)
+	defer func() { _ = client.Close() }()
+
+	serverCert, err := selfsign.GenerateSelfSigned()
+	require.NoError(t, err)
+	server, err := Server(serverTransport, serverTransport.RemoteAddr(), WithCertificates(serverCert), WithInsecureSkipVerify(true), WithMinVersion(protocol.Version1_3), WithMaxVersion(protocol.Version1_3))
+	require.NoError(t, err)
+	defer func() { _ = server.Close() }()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	errs := make(chan error, 2)
+	go func() { errs <- client.HandshakeContext(ctx) }()
+	go func() { errs <- server.HandshakeContext(ctx) }()
+	require.NoError(t, <-errs)
+	require.NoError(t, <-errs)
+	require.True(t, holdACKs.Load(), "the handshake completed without the client seeing an ACK")
+
+	payload := []byte("application data before the final ACK")
+	_, err = client.Write(payload)
+	require.NoError(t, err)
+	require.NoError(t, server.SetReadDeadline(time.Now().Add(time.Second)))
+	buf := make([]byte, len(payload))
+	_, err = io.ReadFull(server, buf)
+	require.NoError(t, err)
+	assert.Equal(t, payload, buf)
+	holdACKs.Store(false)
 }
 
 func TestDTLS13ServerSendsFinalACK(t *testing.T) {

@@ -289,6 +289,11 @@ func (s *fsm13) send(ctx context.Context, conn Conn) (State, error) {
 	if finished && len(s.flightACK.pending) == 0 {
 		return StateFinished, nil
 	}
+	if finished && s.currentFlight.IsLastSendFlight() {
+		// RFC 9147 Section 5.8.1: the client may send application data right after its
+		// Finished. Only retransmission waits for the ACK of the final flight.
+		s.establishment.mark()
+	}
 
 	return StateWaiting, nil
 }
@@ -303,8 +308,23 @@ func (s *fsm13) wait(ctx context.Context, conn Conn) (State, error) {
 
 	retransmitTimer := s.cfg.NewTimer(s.retransmitInterval)
 	defer retransmitTimer.Stop()
+	// A client waiting for the ACK of its final flight is already established and
+	// may send application data; other commands wait for the finished state.
+	var commands <-chan postHandshakeCommand
+	if s.establishment.Established() {
+		commands = s.postHandshake.commands
+	}
 	for {
 		select {
+		case command := <-commands:
+			if command.Kind != commandSendApplicationData {
+				s.postHandshake.queue = append(s.postHandshake.queue, command)
+
+				continue
+			}
+			if err := s.postHandshake.writeApplicationData(conn, command); err != nil {
+				return StateErrored, err
+			}
 		case received := <-conn.RecvHandshake():
 			transition, err := s.handleReceivedFlight(ctx, conn, received)
 			if err != nil {
