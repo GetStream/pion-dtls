@@ -5582,6 +5582,54 @@ func TestDetachedConnAutonomousRetransmit(t *testing.T) {
 	}
 }
 
+func TestDetachedConnSetRetransmitInterval(t *testing.T) {
+	for name, version := range map[string]protocol.Version{"DTLS12": protocol.Version1_2, "DTLS13": protocol.Version1_3} {
+		t.Run(name, func(t *testing.T) {
+			client, err := DetachedClient(
+				&net.UDPAddr{IP: net.IPv4(192, 0, 2, 2), Port: 5555},
+				WithInsecureSkipVerify(true),
+				WithMinVersion(version),
+				WithMaxVersion(version),
+				WithFlightInterval(time.Hour),
+			)
+			require.NoError(t, err)
+			t.Cleanup(func() { _ = client.Close() })
+			require.ErrorIs(t, client.SetRetransmitInterval(0), dtlserrors.ErrInvalidFlightInterval)
+
+			require.NoError(t, client.Start(t.Context()))
+			require.Equal(t, 1, countDetachedWrites(t, client))
+
+			// The pending flight is rescheduled from now, and later
+			// retransmissions back off from the new interval instead of the hour.
+			const interval = 100 * time.Millisecond
+			set := time.Now()
+			require.NoError(t, client.SetRetransmitInterval(interval))
+			requireDetachedEventReady(t, client)
+			first := time.Now()
+			require.Equal(t, 1, countDetachedWrites(t, client))
+			assert.GreaterOrEqual(t, first.Sub(set), interval)
+
+			requireDetachedEventReady(t, client)
+			require.Equal(t, 1, countDetachedWrites(t, client))
+			assert.GreaterOrEqual(t, time.Since(first), 2*interval)
+		})
+	}
+}
+
+func countDetachedWrites(t *testing.T, conn *DetachedConn) int {
+	t.Helper()
+
+	writes := 0
+	for event := conn.NextEvent(); event.Kind != DetachedNoEvent; event = conn.NextEvent() {
+		if event.Kind == DetachedWriteDatagrams {
+			require.NotEmpty(t, event.Datagrams)
+			writes++
+		}
+	}
+
+	return writes
+}
+
 func TestDetachedConnValidInputCancelsPendingRetransmit(t *testing.T) { //nolint:cyclop
 	certificate, err := selfsign.GenerateSelfSigned()
 	require.NoError(t, err)

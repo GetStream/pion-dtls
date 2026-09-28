@@ -60,7 +60,18 @@ func notifyAlert(ctx context.Context, conn Conn, dtlsAlert *alert.Alert, err err
 	return err
 }
 
-func handleRetransmitTimeout(retransmit bool, retransmitInterval *time.Duration, cfg *dtlsconfig.HandshakeConfig) State {
+// resetRetransmitInterval restarts the retransmission backoff from the configured interval,
+// which base records.
+func resetRetransmitInterval(retransmitInterval, base *time.Duration, cfg *dtlsconfig.HandshakeConfig) {
+	*base = cfg.RetransmitInterval()
+	*retransmitInterval = *base
+}
+
+func handleRetransmitTimeout(retransmit bool, retransmitInterval, base *time.Duration, cfg *dtlsconfig.HandshakeConfig) State {
+	if *base != cfg.RetransmitInterval() {
+		// The interval changed while the flight was pending: back off from the new one.
+		resetRetransmitInterval(retransmitInterval, base, cfg)
+	}
 	if !retransmit {
 		return StateWaiting
 	}
@@ -77,8 +88,8 @@ func handleRetransmitTimeout(retransmit bool, retransmitInterval *time.Duration,
 	return StateSending
 }
 
-func handleWaitCancellation(retransmitInterval *time.Duration, cfg *dtlsconfig.HandshakeConfig, err error) (State, error) {
-	*retransmitInterval = cfg.InitialRetransmitInterval
+func handleWaitCancellation(retransmitInterval, base *time.Duration, cfg *dtlsconfig.HandshakeConfig, err error) (State, error) {
+	resetRetransmitInterval(retransmitInterval, base, cfg)
 
 	return StateErrored, err
 }

@@ -56,6 +56,7 @@ type fsm12 struct {
 	flights            []*dtlsflight.Outbound
 	retransmit         bool
 	retransmitInterval time.Duration
+	retransmitBase     time.Duration
 	state              *dtlsstate.State12
 	cache              *dtlsflight.Cache
 	cfg                *dtlsconfig.HandshakeConfig
@@ -64,7 +65,7 @@ type fsm12 struct {
 }
 
 func NewFSM12(state *dtlsstate.State12, cache *dtlsflight.Cache, cfg *dtlsconfig.HandshakeConfig, initialFlight dtlsflight12.Flight, initialFlights []*dtlsflight.Outbound, establishment *Establishment) FSM {
-	return &fsm12{currentFlight: initialFlight, flights: initialFlights, retransmit: initialFlights != nil, state: state, cache: cache, cfg: cfg, retransmitInterval: cfg.InitialRetransmitInterval, closed: make(chan struct{}), establishment: establishment}
+	return &fsm12{currentFlight: initialFlight, flights: initialFlights, retransmit: initialFlights != nil, state: state, cache: cache, cfg: cfg, retransmitInterval: cfg.RetransmitInterval(), retransmitBase: cfg.RetransmitInterval(), closed: make(chan struct{}), establishment: establishment}
 }
 
 func (s *fsm12) Run(ctx context.Context, conn Conn, initialState State) error {
@@ -156,7 +157,7 @@ func (s *fsm12) wait(ctx context.Context, conn Conn) (State, error) { //nolint:g
 			if !state.IsRetransmit {
 				// only reset retransmit interval on non-retransmit state
 				// https://github.com/pion/dtls/issues/758
-				s.retransmitInterval = s.cfg.InitialRetransmitInterval
+				resetRetransmitInterval(&s.retransmitInterval, &s.retransmitBase, s.cfg)
 			}
 
 			nextFlight, dtlsAlert, err, ok := dtlsflight12.Parse(
@@ -197,9 +198,9 @@ func (s *fsm12) wait(ctx context.Context, conn Conn) (State, error) { //nolint:g
 			return StatePreparing, nil
 
 		case <-retransmitTimer.C():
-			return handleRetransmitTimeout(s.retransmit, &s.retransmitInterval, s.cfg), nil
+			return handleRetransmitTimeout(s.retransmit, &s.retransmitInterval, &s.retransmitBase, s.cfg), nil
 		case <-ctx.Done():
-			return handleWaitCancellation(&s.retransmitInterval, s.cfg, ctx.Err())
+			return handleWaitCancellation(&s.retransmitInterval, &s.retransmitBase, s.cfg, ctx.Err())
 		}
 	}
 }

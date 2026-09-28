@@ -65,6 +65,9 @@ type DetachedConn struct {
 	started bool
 	blocked chan struct{}
 
+	timersMu sync.Mutex
+	timers   map[*detachedTimer]struct{}
+
 	established   atomic.Bool
 	quiescentSkip atomic.Bool
 
@@ -128,6 +131,7 @@ func newDetachedConn(remoteAddr net.Addr, config *dtlsConfig, isClient bool) (*D
 
 	detached := &DetachedConn{
 		blocked:    make(chan struct{}),
+		timers:     make(map[*detachedTimer]struct{}),
 		eventReady: make(chan struct{}, 1),
 		inbound:    make(chan addrPkt),
 		terminal:   make(chan struct{}),
@@ -220,6 +224,28 @@ func (c *DetachedConn) Write(data []byte) (int, error) {
 	}
 
 	return n, err
+}
+
+// SetRetransmitInterval changes the interval after which a handshake flight is
+// first retransmitted, which WithFlightInterval sets when the connection is
+// created. A pending retransmission is rescheduled to interval from now, and
+// backs off from interval; later flights start from interval. It lets a caller
+// that learns the round-trip time only after the handshake started, for
+// example from ICE, set the timer from it. It may be called concurrently with
+// the driving methods and returns an error if interval is not positive.
+func (c *DetachedConn) SetRetransmitInterval(interval time.Duration) error {
+	if interval <= 0 {
+		return dtlserrors.ErrInvalidFlightInterval
+	}
+	c.conn.handshakeConfig.SetRetransmitInterval(interval)
+
+	c.timersMu.Lock()
+	defer c.timersMu.Unlock()
+	for timer := range c.timers {
+		timer.timer.Reset(interval)
+	}
+
+	return nil
 }
 
 // EventReady is signaled when NextEvent may return an event and may be selected
@@ -353,9 +379,18 @@ func (c *DetachedConn) readDatagram(ctx context.Context, buffer []byte) (int, ne
 
 func (c *DetachedConn) newTimer(d time.Duration) dtlsconfig.Timer {
 	timer := &detachedTimer{owner: c, ch: make(chan time.Time, 1)}
+	c.timersMu.Lock()
 	timer.timer = time.AfterFunc(d, timer.fire)
+	c.timers[timer] = struct{}{}
+	c.timersMu.Unlock()
 
 	return timer
+}
+
+func (c *DetachedConn) removeTimer(timer *detachedTimer) {
+	c.timersMu.Lock()
+	delete(c.timers, timer)
+	c.timersMu.Unlock()
 }
 
 type detachedTimer struct {
@@ -373,6 +408,7 @@ func (t *detachedTimer) fire() {
 	if !t.claimed.CompareAndSwap(false, true) {
 		return
 	}
+	t.owner.removeTimer(t)
 
 	t.ch <- time.Now()
 	_ = t.owner.waitUntilBlocked()
@@ -381,5 +417,6 @@ func (t *detachedTimer) fire() {
 func (t *detachedTimer) Stop() {
 	if t.claimed.CompareAndSwap(false, true) {
 		t.timer.Stop()
+		t.owner.removeTimer(t)
 	}
 }

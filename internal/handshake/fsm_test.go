@@ -161,21 +161,34 @@ func TestHandshakeFSMRetransmitTimeout(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			interval := test.initial
-			cfg := &dtlsconfig.HandshakeConfig{DisableRetransmitBackoff: test.disableBackoff}
+			interval, base := test.initial, test.initial
+			cfg := &dtlsconfig.HandshakeConfig{InitialRetransmitInterval: test.initial, DisableRetransmitBackoff: test.disableBackoff}
 
-			assert.Equal(t, test.expectedState, handleRetransmitTimeout(test.retransmit, &interval, cfg))
+			assert.Equal(t, test.expectedState, handleRetransmitTimeout(test.retransmit, &interval, &base, cfg))
 			assert.Equal(t, test.expected, interval)
 		})
 	}
 }
 
+func TestHandshakeFSMRetransmitTimeoutAfterIntervalChange(t *testing.T) {
+	cfg := &dtlsconfig.HandshakeConfig{InitialRetransmitInterval: time.Hour}
+	interval, base := time.Hour, time.Hour
+	cfg.SetRetransmitInterval(100 * time.Millisecond)
+
+	assert.Equal(t, StateSending, handleRetransmitTimeout(true, &interval, &base, cfg))
+	assert.Equal(t, 200*time.Millisecond, interval)
+	assert.Equal(t, 100*time.Millisecond, base)
+
+	assert.Equal(t, StateSending, handleRetransmitTimeout(true, &interval, &base, cfg))
+	assert.Equal(t, 400*time.Millisecond, interval)
+}
+
 func TestHandshakeFSMWaitCancellationResetsRetransmitInterval(t *testing.T) {
 	cfg := &dtlsconfig.HandshakeConfig{InitialRetransmitInterval: time.Second}
-	interval := 30 * time.Second
+	interval, base := 30*time.Second, time.Second
 	errExpected := context.Canceled
 
-	state, err := handleWaitCancellation(&interval, cfg, errExpected)
+	state, err := handleWaitCancellation(&interval, &base, cfg, errExpected)
 
 	assert.Equal(t, StateErrored, state)
 	assert.ErrorIs(t, err, errExpected)

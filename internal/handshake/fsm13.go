@@ -71,6 +71,7 @@ type fsm13 struct {
 	flights            []*dtlsflight.Outbound
 	retransmit         bool
 	retransmitInterval time.Duration
+	retransmitBase     time.Duration
 	flightACK          reliableFlight
 	handshakeContext
 	closed        chan struct{}
@@ -97,7 +98,8 @@ func newFSM13WithEstablishment(state *dtlsstate.State13, cache *dtlsflight.Cache
 		flights:            initialFlights,
 		retransmit:         initialFlights != nil,
 		handshakeContext:   handshakeContext{state: state, cache: cache, cfg: cfg, transcript: initialTranscript},
-		retransmitInterval: cfg.InitialRetransmitInterval,
+		retransmitInterval: cfg.RetransmitInterval(),
+		retransmitBase:     cfg.RetransmitInterval(),
 		closed:             make(chan struct{}),
 		establishment:      establishment,
 		postHandshake:      newPostHandshake(handshakeContext{state: state, cache: cache, cfg: cfg, transcript: initialTranscript}),
@@ -340,9 +342,9 @@ func (s *fsm13) wait(ctx context.Context, conn Conn) (State, error) {
 			return transition.state, nil
 
 		case <-retransmitTimer.C():
-			return handleRetransmitTimeout(s.retransmit, &s.retransmitInterval, s.cfg), nil
+			return handleRetransmitTimeout(s.retransmit, &s.retransmitInterval, &s.retransmitBase, s.cfg), nil
 		case <-ctx.Done():
-			return handleWaitCancellation(&s.retransmitInterval, s.cfg, ctx.Err())
+			return handleWaitCancellation(&s.retransmitInterval, &s.retransmitBase, s.cfg, ctx.Err())
 		}
 	}
 }
@@ -389,7 +391,7 @@ func (s *fsm13) handleReceivedFlight( //nolint:cyclop
 	// Keep the reader paused while this receive state is parsed.
 	s.received.retain(received)
 	if !received.IsRetransmit {
-		s.retransmitInterval = s.cfg.InitialRetransmitInterval
+		resetRetransmitInterval(&s.retransmitInterval, &s.retransmitBase, s.cfg)
 	}
 	ackResult := s.flightACK.acknowledge(received.ACKs)
 	s.applyACKProgress(ackResult)
@@ -471,7 +473,7 @@ func (s *fsm13) transitionAfterACK(result ACKResult, peerRetransmit bool) receiv
 	}
 	if result.Empty || len(result.Messages) != 0 || peerRetransmit {
 		return receivedFlightTransition{
-			state: handleRetransmitTimeout(s.retransmit, &s.retransmitInterval, s.cfg),
+			state: handleRetransmitTimeout(s.retransmit, &s.retransmitInterval, &s.retransmitBase, s.cfg),
 		}
 	}
 

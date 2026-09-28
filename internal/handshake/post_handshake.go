@@ -180,7 +180,6 @@ type postHandshake struct {
 	// Reverse lookup for received ACK record numbers.
 	recordIndex map[protocol.RecordNumber]postHandshakeRecord
 
-	initialRetransmitInterval time.Duration
 	handshakeContext
 }
 
@@ -221,7 +220,7 @@ func (c *postHandshakeCompletion) result() error {
 }
 
 func newPostHandshake(ctx handshakeContext) *postHandshake {
-	return &postHandshake{commands: make(chan postHandshakeCommand), flights: make(map[postHandshakeFlightID]*reliablePostHandshakeFlight), recordIndex: make(map[protocol.RecordNumber]postHandshakeRecord), initialRetransmitInterval: ctx.cfg.InitialRetransmitInterval, handshakeContext: ctx}
+	return &postHandshake{commands: make(chan postHandshakeCommand), flights: make(map[postHandshakeFlightID]*reliablePostHandshakeFlight), recordIndex: make(map[protocol.RecordNumber]postHandshakeRecord), handshakeContext: ctx}
 }
 
 func (p *postHandshake) initialize() {
@@ -623,7 +622,7 @@ func (p *postHandshake) newReliableFlight(category postHandshakeCategory, messag
 		ID:      postHandshakeFlightID{Category: category, MessageSequence: sequence},
 		Packets: []*dtlsflight.Outbound{packet}, Epoch: packet.Epoch,
 		PendingFragments: make(map[postHandshakeFragment]struct{}), SentRecords: make(map[protocol.RecordNumber]struct{}),
-		RetransmitInterval: p.initialRetransmitInterval,
+		RetransmitInterval: p.cfg.RetransmitInterval(),
 	}
 }
 

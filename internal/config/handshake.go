@@ -17,6 +17,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	dtlserrors "github.com/pion/dtls/v4/internal/errors"
@@ -164,6 +165,25 @@ type HandshakeConfig struct {
 
 	nameToCertificate map[string]*tls.Certificate
 	mu                sync.Mutex
+
+	// retransmitInterval replaces InitialRetransmitInterval once set.
+	retransmitInterval atomic.Int64
+}
+
+// RetransmitInterval returns the interval after which a flight is first retransmitted:
+// InitialRetransmitInterval, unless SetRetransmitInterval changed it.
+func (c *HandshakeConfig) RetransmitInterval() time.Duration {
+	if interval := c.retransmitInterval.Load(); interval != 0 {
+		return time.Duration(interval)
+	}
+
+	return c.InitialRetransmitInterval
+}
+
+// SetRetransmitInterval changes the interval RetransmitInterval returns. It is safe to
+// call while a handshake runs.
+func (c *HandshakeConfig) SetRetransmitInterval(interval time.Duration) {
+	c.retransmitInterval.Store(int64(interval))
 }
 
 // GenerateConnectionID returns a CID matching the configured receive length.
