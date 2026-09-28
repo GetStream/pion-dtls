@@ -444,7 +444,13 @@ func WithSupportedProtocols(protocols ...string) Option {
 	})
 }
 
-// WithEllipticCurves sets the elliptic curves.
+// WithEllipticCurves sets the elliptic curves (key exchange groups), in
+// order of preference. A client lists them in this order in supported_groups
+// and, for DTLS 1.3, sends a key share for each. A DTLS 1.3 server picks its
+// most preferred group the client supports. If the client sent no key share
+// for it, the server takes its most preferred group the client did send a
+// share for, unless that would trade a post-quantum group for a classical
+// one, and only otherwise sends a HelloRetryRequest.
 // For functional options, an explicitly empty slice is not allowed.
 func WithEllipticCurves(curves ...elliptic.Curve) Option {
 	return sharedOption(func(c *dtlsConfig) error {

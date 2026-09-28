@@ -118,6 +118,15 @@ func matchingClientKeyShare(state *dtlsstate.State13, cfg *dtlsconfig.HandshakeC
 	return clientKeyShareForGroup(state, selectedGroup)
 }
 
+// preferredClientGroup selects the key exchange group: the server's most
+// preferred group from the client's supported_groups, unless the client sent
+// no key share for it. Then a less preferred group the client did send a
+// share for is taken instead of paying a HelloRetryRequest round trip, as
+// long as that does not trade a post-quantum group for a classical one. Only
+// when no such share exists is the most preferred group returned without a
+// share, and the caller requests one with a HelloRetryRequest.
+// https://www.rfc-editor.org/rfc/rfc8446.html#section-4.2.8
+// https://datatracker.ietf.org/doc/html/draft-ietf-tls-key-share-prediction#section-4
 func preferredClientGroup(
 	state *dtlsstate.State13,
 	cfg *dtlsconfig.HandshakeConfig,
@@ -126,13 +135,35 @@ func preferredClientGroup(
 		return 0, false
 	}
 
+	preferred, ok := elliptic.Curve(0), false
 	for _, group := range cfg.EllipticCurves {
 		if slices.Contains(state.RemoteGroups, group) {
+			preferred, ok = group, true
+
+			break
+		}
+	}
+	if !ok {
+		return 0, false
+	}
+	if _, hasShare := clientKeyShareForGroup(state, preferred); hasShare {
+		return preferred, true
+	}
+
+	for _, group := range cfg.EllipticCurves {
+		if !slices.Contains(state.RemoteGroups, group) || (isPostQuantumGroup(preferred) && !isPostQuantumGroup(group)) {
+			continue
+		}
+		if _, hasShare := clientKeyShareForGroup(state, group); hasShare {
 			return group, true
 		}
 	}
 
-	return 0, false
+	return preferred, true
+}
+
+func isPostQuantumGroup(group elliptic.Curve) bool {
+	return group == elliptic.X25519MLKEM768
 }
 
 func clientKeyShareForGroup(
