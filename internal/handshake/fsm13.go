@@ -401,6 +401,16 @@ func (s *fsm13) handleReceivedFlight( //nolint:cyclop
 	if received.HasHandshake && received.IsRetransmit && s.currentFlight.IsLastSendFlight() {
 		return s.handlePreviousFlightRetransmit(ctx, conn, received.RecordsToACK, ackResult)
 	}
+	if received.HasHandshake && s.state.IsClient && s.currentFlight.IsLastSendFlight() {
+		// A post-handshake message, such as NewSessionTicket, overtook the ACK of the
+		// client's final flight. Process it as the finished state would, and keep
+		// waiting for the ACK.
+		if err := s.postHandshake.handlePostHandshakeReceive(ctx, conn, received); err != nil {
+			return receivedFlightTransition{}, err
+		}
+
+		return s.transitionAfterACK(ackResult, false), nil
+	}
 
 	nextFlight, err := s.parseReceivedFlight(ctx, conn, s.currentFlight)
 	if err != nil {

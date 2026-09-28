@@ -5582,6 +5582,102 @@ func TestDetachedConnAutonomousRetransmit(t *testing.T) {
 	}
 }
 
+// TestDTLS13ClientPostHandshakeBeforeFinalACK delivers the server's datagrams
+// after the client's Finished (an ACK and a NewSessionTicket) in every order,
+// and with either one lost, as reordering or DTLS in STUN can. A
+// NewSessionTicket that overtakes the ACK must not fail the client, which
+// keeps retransmitting its Finished until the ACK arrives. Application data
+// must then flow.
+func TestDTLS13ClientPostHandshakeBeforeFinalACK(t *testing.T) {
+	certificate, err := selfsign.GenerateSelfSigned()
+	require.NoError(t, err)
+	clientAddr := &net.UDPAddr{IP: net.IPv4(192, 0, 2, 1), Port: 4444}
+	serverAddr := &net.UDPAddr{IP: net.IPv4(192, 0, 2, 2), Port: 5555}
+
+	for name, order := range map[string][]int{
+		"InOrder":  {0, 1},
+		"Reversed": {1, 0},
+		"First":    {0},
+		"Second":   {1},
+	} {
+		t.Run(name, func(t *testing.T) {
+			client, err := DetachedClient(serverAddr,
+				WithInsecureSkipVerify(true),
+				WithMinVersion(protocol.Version1_3),
+				WithMaxVersion(protocol.Version1_3),
+				WithFlightInterval(100*time.Millisecond),
+			)
+			require.NoError(t, err)
+			server, err := DetachedServer(clientAddr,
+				WithCertificates(certificate),
+				WithMinVersion(protocol.Version1_3),
+				WithMaxVersion(protocol.Version1_3),
+				WithInsecureSkipVerifyHello(true),
+			)
+			require.NoError(t, err)
+			t.Cleanup(func() {
+				_ = client.Close()
+				_ = server.Close()
+			})
+			require.NoError(t, client.Start(t.Context()))
+			require.NoError(t, server.Start(t.Context()))
+
+			deliver := func(from, to *DetachedConn, toAddr net.Addr) {
+				for _, datagram := range detachedWrites(t, from) {
+					require.NoError(t, to.HandleDatagram(datagram, toAddr))
+				}
+			}
+			deliver(client, server, clientAddr)
+			deliver(server, client, serverAddr)
+			deliver(client, server, clientAddr)
+			afterFinished := detachedWrites(t, server)
+			require.Len(t, afterFinished, 2)
+
+			for _, i := range order {
+				require.NoError(t, client.HandleDatagram(afterFinished[i], serverAddr))
+			}
+			deliver(client, server, clientAddr)
+			// Without the ACK the client retransmits its Finished, which the
+			// server acknowledges again.
+			for quiet := false; !quiet; {
+				select {
+				case <-client.EventReady():
+					deliver(client, server, clientAddr)
+					deliver(server, client, serverAddr)
+					deliver(client, server, clientAddr)
+				case <-time.After(300 * time.Millisecond):
+					quiet = true
+				}
+			}
+
+			_, err = client.Write([]byte("ping"))
+			require.NoError(t, err)
+			var received []byte
+			drainDetachedEvents(t, client, server, clientAddr, serverAddr, nil, nil, nil)
+			drainDetachedEvents(t, server, client, serverAddr, clientAddr, nil, &received, nil)
+			require.Equal(t, []byte("ping"), received)
+		})
+	}
+}
+
+// detachedWrites returns the datagrams of the pending events and fails on a
+// closed connection.
+func detachedWrites(t *testing.T, conn *DetachedConn) [][]byte {
+	t.Helper()
+
+	var datagrams [][]byte
+	for event := conn.NextEvent(); event.Kind != DetachedNoEvent; event = conn.NextEvent() {
+		switch event.Kind { //nolint:exhaustive
+		case DetachedWriteDatagrams:
+			datagrams = append(datagrams, event.Datagrams...)
+		case DetachedClosed:
+			require.NoError(t, event.Err)
+		}
+	}
+
+	return datagrams
+}
+
 func TestDetachedConnSetRetransmitInterval(t *testing.T) {
 	for name, version := range map[string]protocol.Version{"DTLS12": protocol.Version1_2, "DTLS13": protocol.Version1_3} {
 		t.Run(name, func(t *testing.T) {
