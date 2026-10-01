@@ -177,6 +177,12 @@ func (c handshakeConn) HandleQueuedPackets(ctx context.Context) error {
 	return c.conn.handleQueuedPackets(ctx)
 }
 
+func (c handshakeConn) ServerFinishedSent() {
+	if c.conn.detached != nil {
+		c.conn.detached.publishServerFinishedSent()
+	}
+}
+
 func (c handshakeConn) SessionKey() []byte {
 	return c.conn.sessionKey()
 }

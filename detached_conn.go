@@ -34,6 +34,19 @@ const (
 	DetachedHandshakeDone
 	// DetachedClosed indicates that the connection has terminated with Err.
 	DetachedClosed
+	// DetachedServerFinishedSent indicates that a DTLS 1.3 server has sent its
+	// Finished: its first Flight 4 is in the DetachedWriteDatagrams events
+	// before this one. From here on ConnectionState and
+	// SelectedSRTPProtectionProfile report the keying material and SRTP
+	// profile of this handshake, the same as after DetachedHandshakeDone (RFC
+	// 8446 Section 7.1 derives the exporter secret from the transcript up to
+	// the server Finished). The client is not authenticated yet: its
+	// Certificate, CertificateVerify and Finished have not been verified, so
+	// a caller that sends anything under these keys sends it to an
+	// unauthenticated peer (RFC 8446 Section 4.4.4). DetachedHandshakeDone or
+	// DetachedClosed follows. It is produced at most once per connection,
+	// only by DTLS 1.3 servers.
+	DetachedServerFinishedSent
 )
 
 // DetachedEvent is an event produced by a DetachedConn. Fields are populated
@@ -68,8 +81,9 @@ type DetachedConn struct {
 	timersMu sync.Mutex
 	timers   map[*detachedTimer]struct{}
 
-	established   atomic.Bool
-	quiescentSkip atomic.Bool
+	established        atomic.Bool
+	quiescentSkip      atomic.Bool
+	serverFinishedSent atomic.Bool
 
 	terminalOnce sync.Once
 	terminal     chan struct{}
@@ -303,6 +317,12 @@ func (c *DetachedConn) publishDatagrams(datagrams [][]byte, addr net.Addr) {
 
 func (c *DetachedConn) publishApplicationData(data []byte) {
 	c.publishEvent(DetachedEvent{Kind: DetachedApplicationData, Data: data})
+}
+
+func (c *DetachedConn) publishServerFinishedSent() {
+	if c.serverFinishedSent.CompareAndSwap(false, true) {
+		c.publishEvent(DetachedEvent{Kind: DetachedServerFinishedSent})
+	}
 }
 
 func (c *DetachedConn) publishEvent(event DetachedEvent) {

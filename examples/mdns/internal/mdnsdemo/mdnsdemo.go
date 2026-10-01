@@ -175,6 +175,7 @@ func (e *endpoint) drainEventsLocked() error { //nolint:cyclop
 			}
 		case dtls.DetachedClosed:
 			return fmt.Errorf("%s DTLS closed: %w", e.name, event.Err)
+		case dtls.DetachedServerFinishedSent:
 		}
 	}
 }

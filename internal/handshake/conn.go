@@ -87,6 +87,13 @@ type Conn interface {
 	SetLocalEpoch(epoch uint64)
 }
 
+// ServerFinishedNotifier is an optional Conn method. A DTLS 1.3 server calls it
+// once, right after its first Flight 4, which ends with its Finished, has been
+// written and before any later client flight is processed.
+type ServerFinishedNotifier interface {
+	ServerFinishedSent()
+}
+
 func sideString(isClient bool) string {
 	if isClient {
 		return "client"

@@ -49,6 +49,9 @@ func (c *handshakeContext) afterSend(
 		c.state.RemoteEpoch() < dtlsflight13.EpochHandshake {
 		// Only the first send advances the epoch and drains packets. A timer
 		// retransmission has no receive-side rendezvous and the reader is active.
+		if notifier, ok := conn.(ServerFinishedNotifier); ok {
+			notifier.ServerFinishedSent()
+		}
 		c.state.SetRemoteEpoch(dtlsflight13.EpochHandshake)
 		if err := conn.HandleQueuedPackets(ctx); err != nil {
 			return false, err

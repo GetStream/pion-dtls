@@ -5874,7 +5874,7 @@ func drainDetachedEvents( //nolint:cyclop
 			}
 		case DetachedClosed:
 			require.NoError(t, event.Err)
-		case DetachedNoEvent:
+		case DetachedServerFinishedSent, DetachedNoEvent:
 		}
 	}
 }
