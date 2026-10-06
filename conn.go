@@ -2682,6 +2682,13 @@ func (c *Conn) classifyReadLoopError(err error) readLoopErrorAction {
 }
 
 func (c *Conn) deliverReadError(ctx context.Context, err error) {
+	if c.detached != nil {
+		// Nothing reads c.decrypted in detached mode: blocking here would stop the read loop
+		// before it reports quiescence, and HandleDatagram and Close would wait forever.
+		c.log.Debugf("%s: discarding read error: %v", srvCliStr(dtlsstate.CommonState(c.state).IsClient), err)
+
+		return
+	}
 	select {
 	case c.decrypted <- err:
 	case <-c.closed.Done():
